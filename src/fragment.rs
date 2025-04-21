@@ -75,10 +75,28 @@ impl<'f, S> TimestampedFragmentCollector<S> {
   where
     S: AsyncRead + AsyncWrite + Unpin,
   {
+    // Timestamp first frame outside of loop
+    let (res, obligated_send) =
+      self.read_half.read_frame_inner(&mut self.stream).await;
     let ts = std::time::SystemTime::now()
       .duration_since(UNIX_EPOCH)
       .unwrap()
       .as_nanos();
+    let is_closed = self.write_half.closed;
+    if let Some(obligated_send) = obligated_send {
+      if !is_closed {
+        self.write_frame(obligated_send).await?;
+      }
+    }
+    if let Some(frame) = res? {
+      if is_closed && frame.opcode != OpCode::Close {
+        return Err(WebSocketError::ConnectionClosed);
+      }
+      if let Some(frame) = self.fragments.accumulate(frame)? {
+        return Ok((ts, frame));
+      }
+    };
+
     loop {
       let (res, obligated_send) =
         self.read_half.read_frame_inner(&mut self.stream).await;
