@@ -14,6 +14,7 @@
 
 #[cfg(feature = "unstable-split")]
 use std::future::Future;
+use std::time::UNIX_EPOCH;
 
 use crate::error::WebSocketError;
 use crate::frame::Frame;
@@ -38,6 +39,83 @@ impl Fragment {
       Fragment::Text(_, buffer) => buffer,
       Fragment::Binary(buffer) => buffer,
     }
+  }
+}
+
+pub struct TimestampedFragmentCollector<S> {
+  stream: S,
+  read_half: ReadHalf,
+  write_half: WriteHalf,
+  fragments: Fragments,
+}
+
+impl<'f, S> TimestampedFragmentCollector<S> {
+  /// Creates a new `TimestampedFragmentCollector` with the provided `WebSocket`.
+  pub fn new(ws: WebSocket<S>) -> TimestampedFragmentCollector<S>
+  where
+    S: AsyncRead + AsyncWrite + Unpin,
+  {
+    let (stream, read_half, write_half) = ws.into_parts_internal();
+    TimestampedFragmentCollector {
+      stream,
+      read_half,
+      write_half,
+      fragments: Fragments::new(),
+    }
+  }
+
+  /// Reads a WebSocket frame, timestamping the first frame read,
+  /// then collects fragmented messages until the final frame is received
+  /// and returns the completed message.
+  ///
+  /// Text frames payload is guaranteed to be valid UTF-8.
+  pub async fn read_frame(
+    &mut self,
+  ) -> Result<(u128, Frame<'f>), WebSocketError>
+  where
+    S: AsyncRead + AsyncWrite + Unpin,
+  {
+    let ts = std::time::SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+    loop {
+      let (res, obligated_send) =
+        self.read_half.read_frame_inner(&mut self.stream).await;
+      let is_closed = self.write_half.closed;
+      if let Some(obligated_send) = obligated_send {
+        if !is_closed {
+          self.write_frame(obligated_send).await?;
+        }
+      }
+      let Some(frame) = res? else {
+        continue;
+      };
+      if is_closed && frame.opcode != OpCode::Close {
+        return Err(WebSocketError::ConnectionClosed);
+      }
+      if let Some(frame) = self.fragments.accumulate(frame)? {
+        return Ok((ts, frame));
+      }
+    }
+  }
+
+  /// See `WebSocket::write_frame`.
+  pub async fn write_frame(
+    &mut self,
+    frame: Frame<'f>,
+  ) -> Result<(), WebSocketError>
+  where
+    S: AsyncRead + AsyncWrite + Unpin,
+  {
+    self.write_half.write_frame(&mut self.stream, frame).await?;
+    Ok(())
+  }
+
+  /// Consumes the `TimestampedFragmentCollector` and returns the underlying stream.
+  #[inline]
+  pub fn into_inner(self) -> S {
+    self.stream
   }
 }
 

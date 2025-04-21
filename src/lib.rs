@@ -180,6 +180,7 @@ pub use crate::error::WebSocketError;
 pub use crate::fragment::FragmentCollector;
 #[cfg(feature = "unstable-split")]
 pub use crate::fragment::FragmentCollectorRead;
+pub use crate::fragment::TimestampedFragmentCollector;
 pub use crate::frame::Frame;
 pub use crate::frame::OpCode;
 pub use crate::frame::Payload;
