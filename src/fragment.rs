@@ -97,6 +97,7 @@ impl<'f, S> TimestampedFragmentCollector<S> {
       }
     };
 
+    // This continues to collect the rest of the frames.
     loop {
       let (res, obligated_send) =
         self.read_half.read_frame_inner(&mut self.stream).await;
